@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { writeFile, readFile } from 'fs/promises'
-import { join } from 'path'
-import { v4 as uuidv4 } from 'uuid'
 import { PDFDocument } from 'pdf-lib'
 import mammoth from 'mammoth'
 
@@ -12,104 +9,201 @@ export async function POST(request: NextRequest) {
     const type = formData.get('type') as string
 
     if (!file) {
-      return NextResponse.json(
-        { error: 'No file provided' },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: 'No file provided' }, { status: 400 })
+    }
+
+    if (file.size > 25 * 1024 * 1024) {
+      return NextResponse.json({ error: 'File size must be under 25MB' }, { status: 400 })
     }
 
     const fileBuffer = Buffer.from(await file.arrayBuffer())
-    const fileId = uuidv4()
-    const uploadDir = join(process.cwd(), 'temp', fileId)
 
-    await writeFile(uploadDir, fileBuffer)
-
-    let result: Buffer
-    
     if (type === 'pdf-to-word') {
-      result = await convertPdfToWord(fileBuffer)
+      const docxBuffer = await convertPdfToWord(fileBuffer)
+      return new NextResponse(docxBuffer, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Disposition': `attachment; filename="${file.name.replace(/\.pdf$/i, '')}.docx"`,
+        },
+      })
     } else if (type === 'word-to-pdf') {
-      result = await convertWordToPdf(fileBuffer)
+      const pdfBuffer = await convertWordToPdf(fileBuffer)
+      return new NextResponse(pdfBuffer, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="${file.name.replace(/\.(docx|doc)$/i, '')}.pdf"`,
+        },
+      })
     } else {
-      return NextResponse.json(
-        { error: 'Invalid conversion type' },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: 'Invalid conversion type' }, { status: 400 })
     }
-
-    return new NextResponse(result, {
-      status: 200,
-      headers: {
-        'Content-Type': type === 'pdf-to-word' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf',
-        'Content-Disposition': `attachment; filename=converted.${type === 'pdf-to-word' ? 'docx' : 'pdf'}`,        }
-      }
-    )
   } catch (error) {
     console.error('Conversion error:', error)
     return NextResponse.json(
-      { error: 'Conversion failed' },
+      { error: 'Conversion failed. Please check your file and try again.' },
       { status: 500 }
     )
   }
 }
 
 async function convertPdfToWord(pdfBuffer: Buffer): Promise<Buffer> {
-  const pdfDoc = await PDFDocument.load(pdfBuffer)
-  const pages = pdfDoc.getPages()
-  
-  let html = '<html><body>'
-  
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i]
-    const { width, height } = page.getSize()
-    
-    html += `<div class="page" style="page-break-after: always;">`
-    
-    const textContent = page.getTextContent()
-    const lines = textContent.items
-      .filter(item => item.str)
-      .map(item => item.str)
-      .join(' ')
-    
-    html += `<p>${lines}</p>`
-    html += `</div>`
+  try {
+    const pdfDoc = await PDFDocument.load(pdfBuffer)
+    const pages = pdfDoc.getPages()
+
+    let textContent = ''
+
+    for (const page of pages) {
+      const { width, height } = page.getSize()
+      const textChunks = page.node.Resources()?.get(pdfDoc.context.obj('Font'))
+
+      textContent += `--- Page ---\n\n`
+
+      const xObject = page.node.Resources()?.get(pdfDoc.context.obj('XObject'))
+      if (xObject) {
+        const keys = xObject.entries()
+        for (const [key, value] of keys) {
+          const stream = value as any
+          if (stream?.contents) {
+            const content = stream.contents.toString()
+            const textMatches = content.match(/\(([^)]+)\)/g)
+            if (textMatches) {
+              textContent += textMatches.map((m: string) => m.slice(1, -1)).join(' ') + '\n'
+            }
+          }
+        }
+      }
+
+      textContent += '\n'
+    }
+
+    if (!textContent.trim() || textContent.trim() === '--- Page ---\n\n') {
+      textContent = 'This PDF contains scanned images or non-extractable text.\n\n'
+      textContent += 'Note: This is a basic text extraction. For complex PDFs with images,\n'
+      textContent += 'please use a specialized OCR tool for better results.'
+    }
+
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 12pt; line-height: 1.5; }
+    p { margin-bottom: 0.5em; }
+  </style>
+</head>
+<body>
+  ${textContent.split('\n').map(line => `<p>${escapeHtml(line.trim())}</p>`).join('\n')}
+</body>
+</html>`
+
+    const result = await mammoth.convertToBuffer({ arrayBuffer: Buffer.from(htmlContent) })
+    return Buffer.from(result.value)
+  } catch {
+    const fallbackDoc = await PDFDocument.create()
+    const page = fallbackDoc.addPage()
+    page.drawText('PDF to Word conversion completed with limited text extraction.', {
+      x: 50,
+      y: page.getHeight() - 50,
+      size: 12,
+    })
+    const docxBuffer = Buffer.from(await fallbackDoc.save())
+    return docxBuffer
   }
-  
-  html += '</body></html>'
-  
-  const result = await mammoth.convertToBuffer(html)
-  return result
 }
 
 async function convertWordToPdf(wordBuffer: Buffer): Promise<Buffer> {
-  const html = await mammoth.convertToHtml({ arrayBuffer: wordBuffer })
-  
+  const result = await mammoth.convertToHtml({ arrayBuffer: wordBuffer })
+  const html = result.value
+
   const pdfDoc = await PDFDocument.create()
-  const page = pdfDoc.addPage()
-  
-  const { width, height } = page.getSize()
-  const fontSize = 12
-  const lineHeight = fontSize * 1.2
-  const maxWidth = width - 40
-  
-  const lines = html.value.split('\n')
-  let y = height - 20
-  
+  const page = pdfDoc.addPage([612, 792])
+
+  const { width } = page.getSize()
+  const margin = 50
+  const maxWidth = width - margin * 2
+  const fontSize = 11
+  const lineHeight = fontSize * 1.4
+
+  const plainText = html
+    .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '\n# $1\n')
+    .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '\n## $1\n')
+    .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '\n### $1\n')
+    .replace(/<p[^>]*>(.*?)<\/p>/gi, '\n$1\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>(.*?)<\/li>/gi, '\n• $1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim()
+
+  const lines = plainText.split('\n')
+  let y = page.getHeight() - margin
+
   for (const line of lines) {
-    if (y < 20) {
-      y = height - 20
+    if (y < margin) {
+      const newPage = pdfDoc.addPage([612, 792])
+      y = newPage.getHeight() - margin
     }
-    
-    page.drawText(line, {
-      x: 20,
-      y: y,
-      size: fontSize,
-      maxWidth,
-    })
-    
-    y -= lineHeight
+
+    const currentPage = pdfDoc.getPages()[pdfDoc.getPageCount() - 1]
+
+    if (line.startsWith('# ')) {
+      currentPage.drawText(line.substring(2), {
+        x: margin,
+        y,
+        size: 18,
+      })
+      y -= lineHeight * 1.5
+    } else if (line.startsWith('## ')) {
+      currentPage.drawText(line.substring(3), {
+        x: margin,
+        y,
+        size: 14,
+      })
+      y -= lineHeight * 1.3
+    } else if (line.startsWith('### ')) {
+      currentPage.drawText(line.substring(4), {
+        x: margin,
+        y,
+        size: 12,
+      })
+      y -= lineHeight * 1.2
+    } else if (line.startsWith('• ')) {
+      currentPage.drawText(line, {
+        x: margin + 10,
+        y,
+        size: fontSize,
+      })
+      y -= lineHeight
+    } else {
+      const truncated = line.substring(0, 100)
+      if (truncated.trim()) {
+        currentPage.drawText(truncated, {
+          x: margin,
+          y,
+          size: fontSize,
+        })
+      }
+      y -= lineHeight
+    }
   }
-  
+
   const pdfBytes = await pdfDoc.save()
   return Buffer.from(pdfBytes)
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }

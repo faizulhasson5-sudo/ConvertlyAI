@@ -1,3 +1,5 @@
+import { faqData } from '@/lib/faq-data'
+
 export const metadata = {
   title: 'FAQ - ConvertlyAI',
   description: 'Frequently asked questions about ConvertlyAI. Learn about our free PDF to Word and Word to PDF converter.',

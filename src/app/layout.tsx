@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Free PDF to Word Converter Online | Convert Word to PDF – ConvertlyAI',
@@ -26,10 +27,6 @@ export const metadata: Metadata = {
       'max-snippet': -1,
     },
   },
-  verification: {
-    google: 'verification_code',
-    yandex: 'verification_code',
-  },
 }
 
 const structuredData = {
@@ -45,13 +42,6 @@ const structuredData = {
     price: '0',
     priceCurrency: 'USD',
   },
-  featureList: [
-    'PDF to Word conversion',
-    'Word to PDF conversion',
-    'No registration required',
-    '100% secure and private',
-    'Automatic file deletion after 1 hour',
-  ],
 }
 
 export default function RootLayout({
@@ -67,7 +57,7 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         />
       </head>
-      {children}
+      <body>{children}</body>
     </html>
   )
 }

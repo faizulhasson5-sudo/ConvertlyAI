@@ -1,36 +1,51 @@
 "use client"
 
 import { useState } from 'react'
-import { pdfToWordConverter, wordToPdfConverter } from '@/lib/converter'
 
 export default function ConverterTool() {
-  const [activeTab, setActiveTab] = useState('pdf-to-word')
-  const [file, setFile] = useState(null)
+  const [activeTab, setActiveTab] = useState<'pdf-to-word' | 'word-to-pdf'>('pdf-to-word')
+  const [file, setFile] = useState<File | null>(null)
   const [isConverting, setIsConverting] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0]
-    if (selectedFile && (selectedFile.type === 'application/pdf' || 
-                        selectedFile.name.endsWith('.docx') || 
-                        selectedFile.name.endsWith('.doc'))) {
-      setFile(selectedFile)
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0]
+    if (selectedFile) {
+      const validTypes = activeTab === 'pdf-to-word'
+        ? ['application/pdf']
+        : ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword']
+      const validExtensions = activeTab === 'pdf-to-word' ? ['.pdf'] : ['.docx', '.doc']
+      const ext = '.' + selectedFile.name.split('.').pop()?.toLowerCase()
+
+      if (validTypes.includes(selectedFile.type) || validExtensions.includes(ext)) {
+        if (selectedFile.size > 25 * 1024 * 1024) {
+          setError('File size must be under 25MB')
+          return
+        }
+        setFile(selectedFile)
+        setResult(null)
+        setError(null)
+      } else {
+        setError(activeTab === 'pdf-to-word' ? 'Please upload a PDF file' : 'Please upload a DOCX file')
+      }
     }
   }
 
   const handleConvert = async () => {
     if (!file) return
-    
+
     setIsConverting(true)
     setProgress(0)
-    
+    setError(null)
+    setResult(null)
+
     try {
       const formData = new FormData()
       formData.append('file', file)
       formData.append('type', activeTab)
-      
-      // Simulate progress
+
       const progressInterval = setInterval(() => {
         setProgress(prev => {
           if (prev >= 90) {
@@ -40,25 +55,35 @@ export default function ConverterTool() {
           return prev + 10
         })
       }, 500)
-      
+
       const response = await fetch('/api/convert', {
         method: 'POST',
         body: formData,
       })
-      
+
       clearInterval(progressInterval)
-      setProgress(100)
-      
-      if (response.ok) {
-        const blob = await response.blob()
-        const url = window.URL.createObjectURL(blob)
-        setResult(url)
+
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || 'Conversion failed')
       }
-    } catch (error) {
-      console.error('Conversion error:', error)
+
+      setProgress(100)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      setResult(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Conversion failed')
     } finally {
       setIsConverting(false)
     }
+  }
+
+  const handleTabChange = (tab: 'pdf-to-word' | 'word-to-pdf') => {
+    setActiveTab(tab)
+    setFile(null)
+    setResult(null)
+    setError(null)
   }
 
   return (
@@ -67,20 +92,22 @@ export default function ConverterTool() {
         <div className="bg-white rounded-xl shadow-lg p-8">
           <div className="flex gap-4 mb-8 border-b">
             <button
-              onClick={() => setActiveTab('pdf-to-word')}
-              className={`pb-4 px-6 font-semibold transition-colors ${activeTab === 'pdf-to-word' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-600 hover:text-gray-800'}
-              `}
+              onClick={() => handleTabChange('pdf-to-word')}
+              className={`pb-4 px-6 font-semibold transition-colors ${
+                activeTab === 'pdf-to-word'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
             >
               PDF to Word
             </button>
             <button
-              onClick={() => setActiveTab('word-to-pdf')}
-              className={`pb-4 px-6 font-semibold transition-colors ${activeTab === 'word-to-pdf' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-600 hover:text-gray-800'}
-              `}
+              onClick={() => handleTabChange('word-to-pdf')}
+              className={`pb-4 px-6 font-semibold transition-colors ${
+                activeTab === 'word-to-pdf'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
             >
               Word to PDF
             </button>
@@ -90,7 +117,7 @@ export default function ConverterTool() {
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-400 transition-colors">
               <input
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept={activeTab === 'pdf-to-word' ? '.pdf' : '.docx,.doc'}
                 onChange={handleFileChange}
                 className="hidden"
                 id="file-upload"
@@ -116,11 +143,17 @@ export default function ConverterTool() {
                       </svg>
                     </div>
                     <p className="text-lg font-medium">Click to upload or drag and drop</p>
-                    <p className="text-gray-500">PDF or DOCX (Max 25MB)</p>
+                    <p className="text-gray-500">{activeTab === 'pdf-to-word' ? 'PDF (Max 25MB)' : 'DOCX (Max 25MB)'}</p>
                   </div>
                 )}
               </label>
             </div>
+
+            {error && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+                {error}
+              </div>
+            )}
 
             {isConverting && (
               <div className="space-y-2">
@@ -129,7 +162,7 @@ export default function ConverterTool() {
                   <span>{progress}%</span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
+                  <div
                     className="bg-blue-600 h-2 rounded-full transition-all duration-300"
                     style={{ width: `${progress}%` }}
                   ></div>
