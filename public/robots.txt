@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+
+# Sitemap
+Sitemap: https://convertlyai.com/sitemap.xml
+
+# Rate limiting
+Crawl-delay: 1
